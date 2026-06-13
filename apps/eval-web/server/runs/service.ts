@@ -1,4 +1,4 @@
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, desc } from "drizzle-orm";
 import { db } from "../db/client";
 import {
     runs,
@@ -60,6 +60,14 @@ export async function createRun(
     }
 
     return run.id;
+}
+
+export async function listRuns(teamId: string) {
+    return db
+        .select()
+        .from(runs)
+        .where(eq(runs.teamId, teamId))
+        .orderBy(desc(runs.createdAt));
 }
 
 export async function getRun(runId: string) {
