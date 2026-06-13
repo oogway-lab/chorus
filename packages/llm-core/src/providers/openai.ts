@@ -10,6 +10,14 @@ import type {
 } from "../types";
 import { parseStructuredOutput } from "./structuredOutput";
 
+/**
+ * Reasoning models (o-series, gpt-5 family) reject `max_tokens` and a
+ * non-default `temperature`. Detect them so the request uses the right params.
+ */
+function isReasoningModel(model: string): boolean {
+    return /^o\d/.test(model) || /^gpt-5/.test(model);
+}
+
 export class OpenAIEvalProvider implements IEvalCompletionProvider {
     private client: OpenAI;
 
@@ -47,12 +55,15 @@ export class OpenAIEvalProvider implements IEvalCompletionProvider {
               } satisfies OpenAI.Chat.Completions.ChatCompletionCreateParams["response_format"])
             : undefined;
 
+        // `max_completion_tokens` is the current param and works for both gpt-4o
+        // and reasoning models; `max_tokens` is deprecated and rejected by o-series.
+        const reasoning = isReasoningModel(req.model);
         const start = performance.now();
         const response = await this.client.chat.completions.create({
             model: req.model,
             messages,
-            max_tokens: req.maxTokens,
-            temperature: req.temperature,
+            max_completion_tokens: req.maxTokens,
+            temperature: reasoning ? undefined : req.temperature,
             response_format: responseFormat,
             stream: false,
         });
