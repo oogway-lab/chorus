@@ -1,142 +1,125 @@
 # Claude's Onboarding Doc
 
-## What is Chorus?
+## What is this?
 
-Chorus is a native Mac AI chat app that lets you chat with all the AIs.
+An OpenAI **model-evaluation web app**. You give it a dataset (images and/or text)
+with an expected JSON output schema and optional ground-truth labels, author a
+versioned prompt, then run several candidate OpenAI models over the dataset. For
+each model it captures the structured output, latency, and cost, scores it
+(field-level diff against labels + an LLM-as-judge rubric), and shows a comparison
+matrix and a leaderboard (quality, latency, and projected production cost per 1k).
+The point is picking a cheaper/newer model that holds quality — e.g. migrating off
+gpt-4o.
 
-It lets you send one prompt and see responses from Claude, o3-pro, Gemini, etc. all at once.
+It's a pnpm workspace:
 
-It's built with Tauri, React, TypeScript, TanStack Query, and a local sqlite database.
+- **`apps/eval-web`** — the web app: Next.js (App Router), Postgres via Drizzle,
+  pg-boss for background run execution.
+- **`packages/llm-core`** (`@chorus/llm-core`) — a Tauri-free OpenAI eval engine
+  (a single request/response `complete()` with latency capture, base64 images, and
+  JSON-schema structured output) plus pure cost helpers. Extracted from the Chorus
+  desktop app's internals.
 
-Key features:
-
--   MCP support
--   Ambient chats (start a chat from anywhere)
--   Projects
--   Bring your own API keys
-
-Most of the functionality lives in this repo. There's also a backend that handles accounts, billing, and proxying the models' requests; that lives at app.chorus.sh and is written in Elixir.
+> This branch is dedicated to the web app. The original **Chorus macOS desktop app**
+> lives on `main` and is not present here. **Do not merge this branch into `main`** —
+> it would delete the desktop app there. This branch is its own line.
 
 ## Your role
 
-Your role is to write code. You do NOT have access to the running app, so you cannot test the code. You MUST rely on me, the user, to test the code.
-
-If I report a bug in your code, after you fix it, you should pause and ask me to verify that the bug is fixed.
-
-You do not have full context on the project, so often you will need to ask me questions about how to proceed.
-
-Don't be shy to ask questions -- I'm here to help you!
-
-If I send you a URL, you MUST immediately fetch its contents and read it carefully, before you do anything else.
+You write code. You can run the app (`pnpm --filter @chorus/eval-web dev`), the
+type-checker, the build, and migrations against a local Postgres. When a change is
+behavioral, prefer to verify it by actually running it (a run end-to-end, a build)
+rather than only type-checking. If I report a bug, fix it and ask me to confirm.
 
 ## Workflow
 
-We use GitHub issues to track work we need to do, and PRs to review code. Whenever you create an issue or a PR, tag it with "by-claude". Use the `gh` bash command to interact with GitHub.
+We use GitHub issues and PRs; tag anything you open `by-claude`. Use `gh`.
 
-To start working on a feature, you should:
+- Branch off this branch (e.g. `claude/feature-name`). **Never commit to `main`.**
+- Commit often. Reconcile branches with rebase or cherry-pick, never merge.
+- Run `git add` and `git commit` as **separate** commands.
+- pnpm manages dependencies. There is no pre-commit hook — run `typecheck`/`build`
+  yourself before committing.
 
-1. Setup
+## Running it
 
--   Identify the relevant GitHub issue (or create one if needed)
--   Checkout main and pull the latest changes
--   Create a new branch like `claude/feature-name`. NEVER commit to main. NEVER push to origin/main.
+```bash
+pnpm install
+cp apps/eval-web/.env.example apps/eval-web/.env   # DATABASE_URL + OPENAI_API_KEY
+pnpm --filter @chorus/eval-web db:migrate
+pnpm --filter @chorus/eval-web dev                 # http://localhost:3000
+```
 
-2. Development
+`requirePrincipal` seeds a single dev team/user in development; a production build
+(`next start`) refuses it unless `AUTH_DEV=true`. Wire a real auth provider before
+any real deployment.
 
--   Commit often as you write code, so that we can revert if needed.
--   When you have a draft of what you're working on, ask me to test it in the app to confirm that it works as you expect. Do this early and often.
+## Structure (`apps/eval-web`)
 
-3. Review
+- `app/` — App Router pages and `actions.ts` (server actions — every mutation goes
+  through these; the only API route is `/api/health`).
+- `server/db/` — Drizzle `schema.ts`, `client.ts`, shared jsonb types in
+  `jsonTypes.ts`, generated `migrations/`.
+- `server/{datasets,prompts,judges,runs}/service.ts` — domain logic (plain,
+  framework-free; this is where to add capabilities).
+- `server/runs/executor.ts` — the run executor.
+- `server/runs/reads.ts` — matrix + leaderboard read models.
+- `server/jobs/runQueue.ts` — pg-boss enqueue + worker + crash recovery.
+- `server/scoring/` — `fieldDiff.ts` and `judge.ts`.
+- `server/images/source.ts` — local-disk image store (base64 for the providers).
+- `server/llm/pricing.ts` — static OpenAI pricing (longest-key match).
+- `instrumentation.ts` — starts the run worker at server boot.
 
--   When the work is done, verify that the diff looks good with `git diff main`
--   While you should attempt to write code that adheres to our coding style, don't worry about manually linting or formatting your changes. There are Husky pre-commit Git hooks that will do this for you.
--   Push the branch to GitHub
--   Open a PR.
-    -   The PR title should not include the issue number
-    -   The PR description should start with the issue number and a brief description of the changes.
-    -   Next, you should write a test plan. I (not you) will execute the test plan before merging the PR. If I can't check off any of the items, I will let you know. Make sure the test plan covers both new functionality and any EXISTING functionality that might be impacted by your changes
+## How a run executes
 
-4. Fixing issues
+1. `createRunAction` validates + persists the run (cells `pending`), **enqueues**
+   it, and redirects immediately (non-blocking).
+2. The pg-boss worker (started in `instrumentation.ts`) calls `executeRun(runId)`.
+3. `executeRun` **atomically claims** its cells (`pending`/`failed` → `running`),
+   then runs in **two phases**: (1) generate every cell, (2) score every cell.
+   Two-phase ordering guarantees the gpt-4o reference output exists before the
+   judge runs.
+4. A cross-run cache reuses a prior generation for the same
+   `(item, model, prompt version, maxTokens)` — never a schema-violating one.
+5. On crash, `recoverOrphanedRuns` re-queues runs stuck in `running`.
 
--   To reconcile different branches, always rebase or cherry-pick. Do not merge.
+## Data model
 
-Sometimes, after you've been working on one feature, I will ask you to start work on an unrelated feature. If I do, you should probably repeat this process from the beginning (checkout main, pull changes, create a new branch). When in doubt, just ask.
+Entities: `teams`/`users`, `datasets`/`dataset_schemas`/`dataset_items`/`labels`,
+`prompts`/`prompt_versions`, `judge_configs`, `runs`/`run_models`/`run_cells`/
+`cell_scores`. All team-owned rows carry `team_id`; reads/writes are team-scoped
+and ownership-checked via `assertSameTeam`.
 
-We use pnpm to manage dependencies.
+Schema changes:
 
-Don't combine git commands -- e.g., instead of `git add -A && git commit`, run `git add -A` and `git commit` separately. This will save me time because I won't have to grant you permission to run the combined command.
-
-## Project Structure
-
--   **UI:** React components in `src/ui/components/`
--   **Core:** Business logic in `src/core/chorus/`
--   **Tauri:** Rust backend in `src-tauri/src/`
-
-Important files and directories to be aware of:
-
--   `src/core/chorus/db/` - Queries against the sqlite database, which are split up by entity type (e.g. message, chat, project)
--   `src/core/chorus/api/` - TanStack Query queries and mutations, which are also split up by entity type
--   `src/ui/components/MultiChat.tsx` - Main interface
--   `src/ui/components/ChatInput.tsx` - The input box where the user types chat messages
--   `src/ui/components/AppSidebar.tsx` - The sidebar on the left
--   `src/ui/App.tsx` - The root component
-
-You can see an up-to-date schema of all database tables in SQL_SCHEMA.md. Use this file as a reference to understand the current
-database schema.
-
-Other features:
-
--   Model picker, which lets the user select which models are available in the chat -- implemented in`ManageModelsBox.tsx`
--   Quick chats (aka Ambient Chats), a lightweight chat window -- implemented, alongside regular chats, in `MultiChat.tsx`
--   Projects, which are folders of related chats -- start with `AppSidebar.tsx`
--   Tools and "connections" (aka toolsets) -- start with `Toolsets.ts`
--   react-router-dom for navigation -- see `App.tsx`
-
-## Screenshots
-
-I've put some screenshots of the app in the `screenshots` directory. If you're working on the UI at all, take a look at them. Keep in mind, though, that they may not be up to date with the latest code changes.
-
-## Data model changes
-
-Changes to the data model will typically require most of the following steps:
-
--   Making a new migration in `src-tauri/src/migrations.rs` (if changes to the sqlite database scheme are needed)
--   Modifying fetch and read functions in `src/core/chorus/DB.ts`
--   Modifying data types (stored in a variety of places)
--   Adding or modifying TanStack Query queries in `src/core/chorus/API.ts`
+- Edit `server/db/schema.ts` (use foreign keys + indexes; type jsonb with `.$type<>`).
+- `pnpm --filter @chorus/eval-web db:generate` to emit a migration, then `db:migrate`.
 
 ## Coding style
 
--   **TypeScript:** Strict typing enabled, ES2020 target. Use `as` only in exceptional
-    circumstances, and then only with an explanatory comment. Prefer type hints.
--   **Paths:** `@ui/*`, `@core/*`, `@/*` aliases. Use these instead of relative imports.
--   **Components:** PascalCase for React components
--   **Interfaces:** Prefixed with "I" (e.g., `IProvider`)
--   **Hooks:** camelCase with "use" prefix
--   **Formatting:** 4-space indentation, Prettier formatting
--   **Promise handling:** All promises must be handled (ESLint enforced)
--   **Nulls:** Prefer undefined to null. Convert `null` values from the database into undefined, e.g. `parentChatId: row.parent_chat_id ?? undefined`
--   **Dates:** If you ever need to render a date, format it using `displayDate` in `src/ui/lib/utils.ts`. If the date was read
-    from our SQLite DB, you will need to convert it to a fully qualified UTC date using `convertDate` first.
--   Do not use foreign keys or other constraints, they're too hard to remove and tend to put us in tricky situations down the line
+- **TypeScript:** strict, ES2020. Use `as` only in exceptional cases, with an
+  explanatory comment (it's the entry points where untyped JSON/`unknown` is
+  narrowed). Prefer type hints.
+- **Paths:** `@/*` alias in `eval-web` over relative imports.
+- **Nulls:** prefer `undefined`; coerce DB `null` → `undefined` at the boundary.
+- **DB:** foreign keys and indexes are expected (Postgres, not the desktop SQLite
+  no-FK rule).
+- **Formatting:** 4-space indent, Prettier. Handle every promise.
 
-IMPORTANT: If you want to use any of these features, you must alert me and explicitly ask for my permission first: `setTimeout`, `useImperativeHandle`, `useRef`, or type assertions with `as`.
+## Testing
+
+There is no test harness yet. The highest-value targets are the pure, deterministic
+units: `packages/llm-core` (`cost.ts`, `providers/structuredOutput.ts`,
+`getBareModelName`, `isReasoningModel`) and `server/scoring/fieldDiff.ts` and
+`server/llm/pricing.ts`.
 
 ## Troubleshooting
 
-Whenever I report that code you wrote doesn't work, or report a bug, you should:
-
-1. Read any relevant code or documentation, looking for hypotheses about the root cause
-2. For each hypothesis, check whether it's consistent with the observations I've already reported
-3. For any remaining hypotheses, think about a test I could run that would tell me if that hypothesis is incorrect
-4. Propose a troubleshooting plan. The plan could involve: me running a test, you writing code, you adding logging statements, me reporting the output of the log statements back to you, or any other steps you think would be helpful.
-
-Then we'll go through the plan together. At each step, keep in mind your list of hypotheses, and remember to re-evaluate each hypothesis against the evidence we've collected.
-
-When we run into issues with the requests we're sending to model providers (e.g., the way we format system prompts, attachments, tool calls, or other parts of the conversation history) one helpful troubleshooting step is to add the line `console.log(`createParams: ${JSON.stringify(createParams, null, 2)}`);` to ProviderAnthropic.ts.
-
-## Updating this onboarding doc
-
-Whenever you discover something that you wish you'd known earlier -- and seems likely to be helpful to future developers as well -- you can add it to the scratchpad section below. Feel free to edit the scratchpad section, but don't change the rest of this doc.
+When a change to provider requests/cost/scoring misbehaves, the fastest signal is a
+real run: create a tiny dataset + prompt, launch a run, and read the matrix. To
+inspect what's sent to OpenAI, log inside `packages/llm-core/src/providers/openai.ts`
+before the `chat.completions.create` call.
 
 ### Scratchpad
+
+(Add anything future-you would want to know here.)
