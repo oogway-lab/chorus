@@ -14,6 +14,13 @@ import {
     timestamp,
     unique,
 } from "drizzle-orm/pg-core";
+import type {
+    FieldRule,
+    JsonSchemaObject,
+    LabelJson,
+    OutputJson,
+    RunConfigSnapshot,
+} from "./jsonTypes";
 
 export const itemType = pgEnum("item_type", ["image", "text", "mixed"]);
 export const promptScope = pgEnum("prompt_scope", ["shared", "model"]);
@@ -72,8 +79,8 @@ export const datasetSchemas = pgTable("dataset_schemas", {
         .notNull()
         .references(() => datasets.id)
         .unique(),
-    jsonSchema: jsonb("json_schema").notNull(),
-    fieldRules: jsonb("field_rules").notNull(),
+    jsonSchema: jsonb("json_schema").$type<JsonSchemaObject>().notNull(),
+    fieldRules: jsonb("field_rules").$type<FieldRule[]>().notNull(),
     createdAt: createdAt(),
 });
 
@@ -97,7 +104,7 @@ export const labels = pgTable("labels", {
         .notNull()
         .references(() => datasetItems.id)
         .unique(),
-    labelJson: jsonb("label_json").notNull(),
+    labelJson: jsonb("label_json").$type<LabelJson>().notNull(),
     createdAt: createdAt(),
 });
 
@@ -150,7 +157,9 @@ export const runs = pgTable("runs", {
     judgeConfigId: uuid("judge_config_id").references(() => judgeConfigs.id),
     status: runStatus("status").notNull().default("pending"),
     // Frozen config snapshot for reproducibility (R7).
-    configSnapshot: jsonb("config_snapshot").notNull(),
+    configSnapshot: jsonb("config_snapshot")
+        .$type<RunConfigSnapshot>()
+        .notNull(),
     createdBy: uuid("created_by").references(() => users.id),
     createdAt: createdAt(),
 });
@@ -182,7 +191,7 @@ export const runCells = pgTable(
             .notNull()
             .references(() => runModels.id),
         status: cellStatus("status").notNull().default("pending"),
-        outputJson: jsonb("output_json"),
+        outputJson: jsonb("output_json").$type<OutputJson>(),
         latencyMs: doublePrecision("latency_ms"),
         costUsd: doublePrecision("cost_usd"),
         costSource: costSource("cost_source"),
