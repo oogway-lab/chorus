@@ -2,12 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requirePrincipal } from "@/server/auth/session";
+import { requirePrincipal, assertSameTeam } from "@/server/auth/session";
 import * as datasets from "@/server/datasets/service";
 import * as prompts from "@/server/prompts/service";
 import * as judges from "@/server/judges/service";
-import { createRun } from "@/server/runs/service";
-import { executeRun } from "@/server/runs/executor";
+import { createRun, getRun } from "@/server/runs/service";
+import { enqueueRun } from "@/server/jobs/runQueue";
 import type { FieldRule, JsonSchemaObject, LabelJson } from "@/server/db/jsonTypes";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -40,8 +40,11 @@ export async function createDatasetAction(formData: FormData) {
 }
 
 export async function setSchemaAction(formData: FormData) {
-    await requirePrincipal();
+    const p = await requirePrincipal();
     const datasetId = String(formData.get("datasetId"));
+    const dataset = await datasets.getDataset(datasetId);
+    if (!dataset) throw new Error("Dataset not found");
+    assertSameTeam(p, dataset.teamId);
     const jsonSchema = parseJsonField<JsonSchemaObject>(
         String(formData.get("jsonSchema") || ""),
         "jsonSchema",
@@ -57,8 +60,11 @@ export async function setSchemaAction(formData: FormData) {
 }
 
 export async function addItemAction(formData: FormData) {
-    await requirePrincipal();
+    const p = await requirePrincipal();
     const datasetId = String(formData.get("datasetId"));
+    const dataset = await datasets.getDataset(datasetId);
+    if (!dataset) throw new Error("Dataset not found");
+    assertSameTeam(p, dataset.teamId);
     const inputText = String(formData.get("inputText") || "");
     const label = parseJsonField<LabelJson | undefined>(
         String(formData.get("label") || ""),
@@ -102,6 +108,9 @@ export async function createPromptAction(formData: FormData) {
 export async function addPromptVersionAction(formData: FormData) {
     const p = await requirePrincipal();
     const promptId = String(formData.get("promptId"));
+    const prompt = await prompts.getPrompt(promptId);
+    if (!prompt) throw new Error("Prompt not found");
+    assertSameTeam(p, prompt.teamId);
     const content = String(formData.get("content") || "");
     await prompts.addPromptVersion(promptId, content, p.userId);
     revalidatePath("/prompts");
@@ -121,6 +130,9 @@ export async function createJudgeAction(formData: FormData) {
 export async function createRunAction(formData: FormData) {
     const p = await requirePrincipal();
     const datasetId = String(formData.get("datasetId"));
+    const dataset = await datasets.getDataset(datasetId);
+    if (!dataset) throw new Error("Dataset not found");
+    assertSameTeam(p, dataset.teamId);
     const promptVersionId = String(formData.get("promptVersionId"));
     const maxTokens = Number(formData.get("maxTokens") || 500);
     const judgeConfigId =
@@ -145,13 +157,17 @@ export async function createRunAction(formData: FormData) {
         judgeConfigId,
         p.userId,
     );
-    await executeRun(runId);
+    // Non-blocking: the background worker executes the run; redirect immediately.
+    await enqueueRun(runId);
     redirect(`/runs/${runId}`);
 }
 
 export async function retryRunAction(formData: FormData) {
-    await requirePrincipal();
+    const p = await requirePrincipal();
     const runId = String(formData.get("runId"));
-    await executeRun(runId);
+    const run = await getRun(runId);
+    if (!run) throw new Error("Run not found");
+    assertSameTeam(p, run.teamId);
+    await enqueueRun(runId);
     revalidatePath(`/runs/${runId}`);
 }

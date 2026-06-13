@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { formatCost } from "@chorus/llm-core";
+import { requirePrincipal, assertSameTeam } from "@/server/auth/session";
 import { getRun } from "@/server/runs/service";
 import { getRunMatrix, getLeaderboard } from "@/server/runs/reads";
 import { retryRunAction } from "@/app/actions";
@@ -15,8 +17,10 @@ export default async function RunPage({
 }: {
     params: { id: string };
 }) {
+    const principal = await requirePrincipal();
     const run = await getRun(params.id);
-    if (!run) return <p>Run not found.</p>;
+    if (!run) notFound();
+    assertSameTeam(principal, run.teamId);
 
     const { models, items, cells, scoresByCell } = await getRunMatrix(params.id);
     const leaderboard = await getLeaderboard(params.id);

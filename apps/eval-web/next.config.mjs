@@ -5,6 +5,8 @@ const nextConfig = {
     experimental: {
         // pg and pg-boss are server-only; keep them external to the bundle.
         serverComponentsExternalPackages: ["pg", "pg-boss"],
+        // Enable instrumentation.ts so the run worker starts at server boot.
+        instrumentationHook: true,
     },
 };
 

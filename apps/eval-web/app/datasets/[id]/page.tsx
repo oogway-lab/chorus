@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+import { requirePrincipal, assertSameTeam } from "@/server/auth/session";
 import {
     getDataset,
     getDatasetSchema,
@@ -39,8 +41,10 @@ export default async function DatasetPage({
 }: {
     params: { id: string };
 }) {
+    const p = await requirePrincipal();
     const dataset = await getDataset(params.id);
-    if (!dataset) return <p>Dataset not found.</p>;
+    if (!dataset) notFound();
+    assertSameTeam(p, dataset.teamId);
     const schema = await getDatasetSchema(params.id);
     const items = await listItems(params.id);
     const labels = await Promise.all(
