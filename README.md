@@ -1,34 +1,31 @@
-<p align="center">
-  <img src="app-icon.png" alt="Chorus icon" width="128" />
-</p>
+# Model Eval
 
-<h1 align="center"><a href="https://chorus.sh">Chorus</a></h1>
+A web app for comparing OpenAI models on image/text datasets — structured output,
+latency, cost, field-level diff against labels, and LLM-as-judge scoring — to pick
+a cheaper model that holds quality (e.g. migrating off gpt-4o).
 
-<p align="center">All the AI, on your Mac. Built by the creators of <a href="https://conductor.build">Conductor.</a></p>
+> **Branch note:** this branch is focused on the eval web app. The original Chorus
+> macOS desktop app lives on `main` and is intentionally not present here. Do not
+> merge this branch into `main` as-is — it would remove the desktop app there.
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/771262eb-5a0e-40cb-b1a5-9df6b903c626" alt="Chorus screenshot" />
-</p>
+## Workspace
 
-# Getting Started
+- **`apps/eval-web`** — the Next.js + Postgres (Drizzle) + pg-boss web app. See its
+  [README](apps/eval-web/README.md) for setup and the execution model.
+- **`packages/llm-core`** — a Tauri-free OpenAI eval engine (single request/response
+  call with latency capture, images, and JSON-schema structured output, plus cost
+  helpers), extracted from the Chorus desktop internals.
 
-You will need:
-
-1. NodeJS installed and on your path
-2. Rust and Cargo installed and on your path (verify with `rustc --version`, `cargo --version`)
-3. `imagemagick` (optional)
-4. `git-lfs` (`brew install git-lfs`)
-5. `pnpm` (`brew install pnpm`)
-
-Once you have those set up, please run:
+## Quick start
 
 ```bash
-git lfs install --force
-git lfs pull
-pnpm run setup  # This is also our Conductor setup script
-pnpm run dev    # This is also our Conductor run script
+pnpm install
+cp apps/eval-web/.env.example apps/eval-web/.env   # set DATABASE_URL + OPENAI_API_KEY
+pnpm --filter @chorus/eval-web db:migrate
+pnpm --filter @chorus/eval-web dev                 # http://localhost:3000
 ```
 
-# Nightly Build
+## Design docs
 
-You can download the [nightly build here](https://cdn.crabnebula.app/download/chorus/chorus/latest/platform/dmg-aarch64?channel=qa). Every push to main triggers a new build.
+- Requirements: `docs/brainstorms/2026-06-13-image-model-eval-webapp-requirements.md`
+- Plans: `docs/plans/`
