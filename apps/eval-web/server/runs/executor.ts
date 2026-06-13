@@ -1,7 +1,10 @@
-// Run executor: fans a run out across its pending cells with bounded concurrency,
-// reuses prior generations (cache), calls the model, persists each cell, and runs
-// scoring (field diff + judge) inline. Invoked in-process for local dev; the same
-// per-cell work is what a pg-boss worker would call in the hosted path.
+// Run executor. Two phases so scoring is deterministic under concurrency:
+//   1. Generation — every claimed cell calls the model (or reuses a cache hit).
+//   2. Scoring — runs only after all generations are persisted, so the judge
+//      always sees a computed gpt-4o reference output.
+// Cells are claimed atomically (status -> 'running'), so a retry racing the
+// background worker never double-processes or double-bills a cell. Invoked
+// in-process by the pg-boss run worker.
 
 import { and, eq, inArray } from "drizzle-orm";
 import { getBareModelName } from "@chorus/llm-core";
@@ -19,6 +22,7 @@ import {
     getRunModels,
     getRunCells,
     findCachedCell,
+    claimRunCells,
 } from "./service";
 import { getPromptVersion } from "../prompts/service";
 import { getDatasetSchema, getLabelForItem } from "../datasets/service";
@@ -60,6 +64,7 @@ async function runPool<T>(
 export async function executeRun(runId: string): Promise<void> {
     const run = await getRun(runId);
     if (!run) throw new Error(`run ${runId} not found`);
+    const maxTokens = run.configSnapshot.maxTokens;
 
     const apiKeys = apiKeysFromEnv();
     const schemaRow = await getDatasetSchema(run.datasetId);
@@ -99,102 +104,79 @@ export async function executeRun(runId: string): Promise<void> {
 
     await db.update(runs).set({ status: "running" }).where(eq(runs.id, runId));
 
-    const cells = (await getRunCells(runId)).filter(
-        (c) => c.status === "pending" || c.status === "failed",
-    );
+    // Atomically claim this invocation's cells so a concurrent run can't share them.
+    const claimed = await claimRunCells(runId);
 
-    await runPool(cells, CONCURRENCY, async (cell) => {
+    // ---- Phase 1: generation ----
+    await runPool(claimed, CONCURRENCY, async (cell) => {
         const rm = modelById.get(cell.runModelId);
         const item = itemById.get(cell.datasetItemId);
-        if (!rm || !item) return;
+        if (!rm || !item) {
+            await db
+                .update(runCells)
+                .set({ status: "failed", error: "missing model or item" })
+                .where(eq(runCells.id, cell.id));
+            return;
+        }
 
         try {
-            let outputJson: OutputJson | null;
-            let latencyMs: number | null;
-            let costUsd: number | undefined;
-            let costSource: "computed" | "unavailable";
-            let promptTokens: number | undefined;
-            let completionTokens: number | undefined;
-            let status: "succeeded" | "cached";
-
             const cached = await findCachedCell(
                 item.id,
                 rm.modelId,
                 rm.promptVersionId,
+                maxTokens,
             );
 
             if (cached) {
-                outputJson = cached.outputJson;
-                latencyMs = cached.latencyMs;
-                costUsd = cached.costUsd ?? undefined;
-                costSource = cached.costSource ?? "unavailable";
-                promptTokens = cached.promptTokens ?? undefined;
-                completionTokens = cached.completionTokens ?? undefined;
-                status = "cached";
-            } else {
-                const content = await promptContent(rm.promptVersionId);
-                const prompt = item.inputText
-                    ? `${content}\n\n${item.inputText}`
-                    : content;
-                const images: EvalImage[] = [];
-                if (item.storageKey && item.mimeType) {
-                    images.push(
-                        await loadImage(item.storageKey, item.mimeType),
-                    );
-                }
-                const exec = await executeCell(
-                    rm.modelId,
-                    {
-                        prompt,
-                        images,
-                        responseSchema,
-                        maxTokens: run.configSnapshot.maxTokens,
-                    },
-                    apiKeys,
-                    pricingFor(rm.modelId),
-                );
-                const obj = asObject(exec.parsed);
-                outputJson = obj ?? { text: exec.outputText };
-                latencyMs = exec.latencyMs;
-                costUsd = exec.costUsd;
-                costSource = exec.costSource;
-                promptTokens = exec.usage.promptTokens;
-                completionTokens = exec.usage.completionTokens;
-                status = "succeeded";
+                await db
+                    .update(runCells)
+                    .set({
+                        status: "cached",
+                        outputJson: cached.outputJson,
+                        latencyMs: cached.latencyMs,
+                        costUsd: cached.costUsd,
+                        costSource: cached.costSource,
+                        promptTokens: cached.promptTokens,
+                        completionTokens: cached.completionTokens,
+                        schemaViolation: false,
+                        maxTokens,
+                        error: null,
+                    })
+                    .where(eq(runCells.id, cell.id));
+                return;
             }
+
+            const content = await promptContent(rm.promptVersionId);
+            const prompt = item.inputText
+                ? `${content}\n\n${item.inputText}`
+                : content;
+            const images: EvalImage[] = [];
+            if (item.storageKey && item.mimeType) {
+                images.push(await loadImage(item.storageKey, item.mimeType));
+            }
+            const exec = await executeCell(
+                rm.modelId,
+                { prompt, images, responseSchema, maxTokens },
+                apiKeys,
+                pricingFor(rm.modelId),
+            );
+            const obj = asObject(exec.parsed);
 
             await db
                 .update(runCells)
                 .set({
-                    status,
-                    outputJson,
-                    latencyMs,
-                    costUsd,
-                    costSource,
-                    promptTokens,
-                    completionTokens,
+                    status: "succeeded",
+                    outputJson: obj ?? { text: exec.outputText },
+                    latencyMs: exec.latencyMs,
+                    costUsd: exec.costUsd,
+                    costSource: exec.costSource,
+                    promptTokens: exec.usage.promptTokens,
+                    completionTokens: exec.usage.completionTokens,
+                    schemaViolation: exec.schemaViolation,
+                    maxTokens,
                     error: null,
                 })
                 .where(eq(runCells.id, cell.id));
-
-            // Scoring failures must not flip a successful generation to failed —
-            // generation and scoring are independent concerns.
-            try {
-                await scoreCell({
-                    cellId: cell.id,
-                    itemId: item.id,
-                    inputText: item.inputText ?? undefined,
-                    hasImage: Boolean(item.storageKey),
-                    outputJson,
-                    fieldRules,
-                    judge,
-                    referenceModelId: referenceModel?.id,
-                    apiKeys,
-                    maxTokens: run.configSnapshot.maxTokens,
-                });
-            } catch (scoreErr) {
-                console.error(`scoring failed for cell ${cell.id}:`, scoreErr);
-            }
         } catch (err) {
             await db
                 .update(runCells)
@@ -206,14 +188,49 @@ export async function executeRun(runId: string): Promise<void> {
         }
     });
 
+    // ---- Phase 2: scoring (all reference outputs now exist) ----
+    const claimedIds = new Set(claimed.map((c) => c.id));
+    const toScore = (await getRunCells(runId)).filter(
+        (c) =>
+            claimedIds.has(c.id) &&
+            (c.status === "succeeded" || c.status === "cached"),
+    );
+
+    await runPool(toScore, CONCURRENCY, async (cell) => {
+        const item = itemById.get(cell.datasetItemId);
+        if (!item) return;
+        try {
+            await scoreCell({
+                cellId: cell.id,
+                itemId: item.id,
+                inputText: item.inputText ?? undefined,
+                hasImage: Boolean(item.storageKey),
+                outputJson: cell.outputJson,
+                fieldRules,
+                judge,
+                referenceModelId: referenceModel?.id,
+                apiKeys,
+                maxTokens,
+            });
+        } catch (scoreErr) {
+            console.error(`scoring failed for cell ${cell.id}:`, scoreErr);
+        }
+    });
+
+    // ---- Finalize ----
     const final = await getRunCells(runId);
-    const done = final.filter(
-        (c) => c.status === "succeeded" || c.status === "cached",
-    ).length;
-    const failed = final.filter((c) => c.status === "failed").length;
-    const status =
-        failed === 0 ? "completed" : done > 0 ? "partial" : "failed";
-    await db.update(runs).set({ status }).where(eq(runs.id, runId));
+    const stillBusy = final.some(
+        (c) => c.status === "running" || c.status === "pending",
+    );
+    if (!stillBusy && final.length > 0) {
+        const done = final.filter(
+            (c) => c.status === "succeeded" || c.status === "cached",
+        ).length;
+        const failed = final.filter((c) => c.status === "failed").length;
+        const status =
+            failed === 0 ? "completed" : done > 0 ? "partial" : "failed";
+        await db.update(runs).set({ status }).where(eq(runs.id, runId));
+    }
 }
 
 interface ScoreArgs {

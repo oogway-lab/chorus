@@ -15,6 +15,13 @@
       "when": 1781347821839,
       "tag": "0001_complete_wolf_cub",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781348157543,
+      "tag": "0002_eager_talkback",
+      "breakpoints": true
     }
   ]
 }

@@ -198,6 +198,12 @@ export const runCells = pgTable(
         costSource: costSource("cost_source"),
         promptTokens: integer("prompt_tokens"),
         completionTokens: integer("completion_tokens"),
+        // True when a structured-output request returned unparseable JSON. Such
+        // cells are not reused as a cache source (a violation is not a good output).
+        schemaViolation: boolean("schema_violation").notNull().default(false),
+        // The max output tokens used for this generation — part of the cache key so
+        // a cell generated under a different limit is not silently reused.
+        maxTokens: integer("max_tokens"),
         error: text("error"),
         createdAt: createdAt(),
     },

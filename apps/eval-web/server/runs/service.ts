@@ -17,6 +17,18 @@ export async function createRun(
     judgeConfigId: string | undefined,
     createdBy: string,
 ): Promise<string> {
+    const items = await db
+        .select({ id: datasetItems.id })
+        .from(datasetItems)
+        .where(eq(datasetItems.datasetId, datasetId));
+
+    if (items.length === 0) {
+        throw new Error("Cannot start a run on a dataset with no items.");
+    }
+    if (models.length === 0) {
+        throw new Error("Cannot start a run with no candidate models.");
+    }
+
     const [run] = await db
         .insert(runs)
         .values({
@@ -41,23 +53,16 @@ export async function createRun(
         )
         .returning();
 
-    const items = await db
-        .select({ id: datasetItems.id })
-        .from(datasetItems)
-        .where(eq(datasetItems.datasetId, datasetId));
-
-    if (items.length > 0) {
-        await db.insert(runCells).values(
-            insertedModels.flatMap((rm) =>
-                items.map((item) => ({
-                    runId: run.id,
-                    datasetItemId: item.id,
-                    runModelId: rm.id,
-                    status: "pending" as const,
-                })),
-            ),
-        );
-    }
+    await db.insert(runCells).values(
+        insertedModels.flatMap((rm) =>
+            items.map((item) => ({
+                runId: run.id,
+                datasetItemId: item.id,
+                runModelId: rm.id,
+                status: "pending" as const,
+            })),
+        ),
+    );
 
     return run.id;
 }
@@ -106,14 +111,16 @@ export async function getScoresForCells(cellIds: string[]) {
 }
 
 /**
- * Prior succeeded/cached generation for the same item × model × prompt version,
- * from any run. The join already scopes the match to the right model + prompt, so
- * identical inputs reuse the earlier output regardless of which run produced it.
+ * Prior succeeded/cached generation for the same item × model × prompt version ×
+ * maxTokens, from any run. Schema-violating cells are never reused. The join scopes
+ * the match to the right model + prompt, so identical inputs reuse the earlier
+ * output regardless of which run produced it.
  */
 export async function findCachedCell(
     datasetItemId: string,
     modelId: string,
     promptVersionId: string,
+    maxTokens: number,
 ) {
     const rows = await db
         .select({
@@ -131,9 +138,29 @@ export async function findCachedCell(
                 eq(runCells.datasetItemId, datasetItemId),
                 eq(runModels.modelId, modelId),
                 eq(runModels.promptVersionId, promptVersionId),
+                eq(runCells.maxTokens, maxTokens),
+                eq(runCells.schemaViolation, false),
                 inArray(runCells.status, ["succeeded", "cached"]),
             ),
         )
         .limit(1);
     return rows[0];
+}
+
+/**
+ * Atomically claim this run's pending/failed cells by flipping them to 'running'
+ * and returning only the rows this call won. A concurrent executor (e.g. a retry
+ * racing the worker) gets the remaining rows or none, so no cell is processed twice.
+ */
+export async function claimRunCells(runId: string) {
+    return db
+        .update(runCells)
+        .set({ status: "running", error: null })
+        .where(
+            and(
+                eq(runCells.runId, runId),
+                inArray(runCells.status, ["pending", "failed"]),
+            ),
+        )
+        .returning();
 }
