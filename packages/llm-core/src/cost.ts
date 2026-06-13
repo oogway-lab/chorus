@@ -1,84 +1,9 @@
-// Pure cost helpers, ported verbatim in behavior from
-// src/core/chorus/api/CostAPI.ts (the SQLite-bound aggregation functions are
-// intentionally NOT ported — the eval app aggregates against its own schema).
+// Pure cost helpers. Cost is computed from OpenAI token usage × pricing; there is
+// no authoritative external cost source.
 
 import type { UsageData } from "./types";
 
-/** Identity/attribution headers for OpenRouter. Configurable per consuming app. */
-export interface OpenRouterAttribution {
-    referer: string;
-    title: string;
-}
-
-interface OpenRouterGenerationResponse {
-    data: {
-        id: string;
-        model: string;
-        generation_time: number;
-        tokens_prompt: number;
-        tokens_completion: number;
-        native_tokens_prompt?: number;
-        native_tokens_completion?: number;
-        usage: number;
-        latency?: number;
-        total_cost: number;
-    };
-}
-
-/**
- * Authoritative cost from OpenRouter's generation endpoint (tiered pricing,
- * caching, etc.). Unlike the desktop version, this also surfaces the latency
- * fields OpenRouter already returns (KTD5) instead of discarding them.
- */
-export async function fetchOpenRouterCost(
-    generationId: string,
-    apiKey: string,
-    attribution: OpenRouterAttribution,
-): Promise<{
-    cost: number;
-    promptTokens: number;
-    completionTokens: number;
-    generationTimeMs?: number;
-    latencyMs?: number;
-} | null> {
-    try {
-        const response = await fetch(
-            `https://openrouter.ai/api/v1/generation?id=${generationId}`,
-            {
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    "HTTP-Referer": attribution.referer,
-                    "X-Title": attribution.title,
-                },
-            },
-        );
-
-        if (!response.ok) {
-            console.warn(
-                `Failed to fetch OpenRouter generation data: ${response.status}`,
-            );
-            return null;
-        }
-
-        const data = (await response.json()) as OpenRouterGenerationResponse;
-
-        return {
-            cost: data.data.total_cost,
-            promptTokens:
-                data.data.native_tokens_prompt ?? data.data.tokens_prompt,
-            completionTokens:
-                data.data.native_tokens_completion ??
-                data.data.tokens_completion,
-            generationTimeMs: data.data.generation_time,
-            latencyMs: data.data.latency,
-        };
-    } catch (error) {
-        console.error("Error fetching OpenRouter generation cost:", error);
-        return null;
-    }
-}
-
-/** Cost from token usage and per-token pricing (fallback for non-OpenRouter models). */
+/** Cost from token usage and per-token pricing. */
 export function calculateCost(
     promptTokens: number,
     completionTokens: number,
@@ -113,7 +38,7 @@ export function computeCostFromUsage(
 
 /**
  * Project a per-item average cost out to a production volume — the headline
- * leaderboard figure (R23), distinct from the eval-run cost.
+ * leaderboard figure, distinct from the eval-run cost.
  */
 export function projectProductionCost(
     perItemCostsUsd: number[],
@@ -125,7 +50,7 @@ export function projectProductionCost(
     return mean * volume;
 }
 
-/** Display formatting, ported verbatim from CostAPI.formatCost. */
+/** Display formatting. Examples: "$0.0023", "0.20¢", "$3.20". */
 export function formatCost(costUsd: number | null | undefined): string {
     if (costUsd === null || costUsd === undefined) return "–";
     if (costUsd === 0) return "$0.00";

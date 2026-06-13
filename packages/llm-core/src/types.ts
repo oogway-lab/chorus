@@ -1,49 +1,26 @@
-// Pure, Tauri-free types shared by the eval engine.
+// Pure, Tauri-free types for the OpenAI-only eval engine.
 //
-// These mirror the equivalents in the Chorus desktop app
-// (src/core/chorus/Models.ts, src/core/chorus/api/CostAPI.ts) but are intentionally
-// scoped to what a server-side eval harness needs: a single request/response call,
-// optional images, optional JSON-schema-constrained output, and per-call usage/latency.
-// Nothing here imports @tauri-apps/*, so the package is safe to run in Node.
+// Scoped to what a server-side eval harness needs: a single request/response call,
+// optional images, optional JSON-schema-constrained output, and per-call
+// usage/latency. Nothing here imports @tauri-apps/*, so the package runs in Node.
 
-/** Providers the eval engine can target. Mirrors the desktop app's provider set. */
-export type ProviderName =
-    | "anthropic"
-    | "openai"
-    | "google"
-    | "openrouter"
-    | "grok"
-    | "perplexity"
-    | "ollama"
-    | "lmstudio";
-
-/** Bring-your-own provider API keys. Matches the desktop `ApiKeys` shape. */
+/** Bring-your-own provider API keys. OpenAI only. */
 export interface ApiKeys {
-    anthropic?: string;
     openai?: string;
-    perplexity?: string;
-    openrouter?: string;
-    google?: string;
-    grok?: string;
 }
 
-/** Token usage returned by a provider. All optional — some providers omit it. */
+/** Token usage returned by a provider. All optional — some responses omit it. */
 export interface UsageData {
     promptTokens?: number;
     completionTokens?: number;
     totalTokens?: number;
-    /** OpenRouter generation id, used to fetch authoritative cost after the call. */
-    generationId?: string;
 }
 
 /**
- * Which source produced a cell's cost. Pinned per call so a leaderboard never
- * silently mixes authoritative OpenRouter cost with statically-computed cost (KTD4).
+ * Which source produced a cell's cost. Cost is always computed from usage ×
+ * pricing, or unavailable when usage is missing.
  */
-export type CostSource =
-    | "openrouter_authoritative"
-    | "computed"
-    | "unavailable";
+export type CostSource = "computed" | "unavailable";
 
 /** An already-encoded image. The Node image source produces these (no Tauri fs). */
 export interface EvalImage {
@@ -53,7 +30,7 @@ export interface EvalImage {
     base64Data: string;
 }
 
-/** A JSON-schema the model output must conform to (structured output, U3). */
+/** A JSON-schema the model output must conform to (structured output). */
 export interface ResponseSchema {
     /** Schema name (required by OpenAI json_schema mode). */
     name: string;
@@ -63,7 +40,7 @@ export interface ResponseSchema {
 
 /** A single eval completion request. */
 export interface CompletionRequest {
-    /** Bare model name without the `provider::` prefix (e.g. "gpt-4o"). */
+    /** OpenAI model name (e.g. "gpt-4o"). */
     model: string;
     system?: string;
     prompt: string;
@@ -86,37 +63,19 @@ export interface CompletionResult {
      */
     schemaViolation?: boolean;
     usage: UsageData;
-    /** Wall-clock duration of the call in milliseconds (KTD5 — new to Chorus). */
+    /** Wall-clock duration of the call in milliseconds. */
     latencyMs: number;
 }
 
-/** Tauri-free completion interface for batch eval (cf. desktop ISimpleCompletionProvider). */
+/** Tauri-free completion interface for batch eval. */
 export interface IEvalCompletionProvider {
     complete(req: CompletionRequest): Promise<CompletionResult>;
 }
 
 /**
- * Split a `provider::model` id into its provider.
- * Mirrors `getProviderName` in the desktop Models.ts.
+ * Strip a `provider::` prefix if one is present, returning the bare model name.
+ * Kept so a stray prefixed id still resolves to a usable OpenAI model name.
  */
-export function getProviderName(modelId: string): ProviderName | undefined {
-    const [provider] = modelId.split("::");
-    const known: ProviderName[] = [
-        "anthropic",
-        "openai",
-        "google",
-        "openrouter",
-        "grok",
-        "perplexity",
-        "ollama",
-        "lmstudio",
-    ];
-    return known.includes(provider as ProviderName)
-        ? (provider as ProviderName)
-        : undefined;
-}
-
-/** Strip the `provider::` prefix, returning the bare model name. */
 export function getBareModelName(modelId: string): string {
     const idx = modelId.indexOf("::");
     return idx === -1 ? modelId : modelId.slice(idx + 2);
