@@ -36,3 +36,5 @@ settings.local.json
 
 # husky
 !.husky/
+# Compound Engineering local config (machine-local)
+.compound-engineering/*.local.yaml
