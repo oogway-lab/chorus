@@ -105,13 +105,15 @@ export async function getScoresForCells(cellIds: string[]) {
         .where(inArray(cellScores.runCellId, cellIds));
 }
 
-/** Prior succeeded/cached generation for the same item × model × prompt version. */
+/**
+ * Prior succeeded/cached generation for the same item × model × prompt version,
+ * from any run. The join already scopes the match to the right model + prompt, so
+ * identical inputs reuse the earlier output regardless of which run produced it.
+ */
 export async function findCachedCell(
     datasetItemId: string,
-    runModelId: string,
     modelId: string,
     promptVersionId: string,
-    excludeRunId: string,
 ) {
     const rows = await db
         .select({
@@ -133,9 +135,5 @@ export async function findCachedCell(
             ),
         )
         .limit(1);
-    // runModelId / excludeRunId are accepted for signature symmetry with the
-    // executor; the join already scopes the match to the right model+prompt.
-    void runModelId;
-    void excludeRunId;
     return rows[0];
 }

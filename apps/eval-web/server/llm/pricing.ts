@@ -2,7 +2,10 @@
 // covers the current OpenAI eval models. Unknown models return undefined so the
 // cell records cost_source = "unavailable" rather than a wrong number.
 
-import type { ModelPricing } from "../jobs/runOrchestrator";
+export interface ModelPricing {
+    promptPricePerToken: number;
+    completionPricePerToken: number;
+}
 
 const M = 1_000_000;
 
@@ -21,11 +24,12 @@ const PRICING: Record<string, [number, number]> = {
 };
 
 export function pricingFor(modelId: string): ModelPricing | undefined {
-    // Match exact name or a dated/suffixed variant (e.g. "gpt-4o-2024-08-06").
-    const key =
-        Object.keys(PRICING).find(
-            (k) => modelId === k || modelId.startsWith(`${k}-`),
-        ) ?? undefined;
+    // Prefer the most specific (longest) key so "gpt-4o-mini" matches its own
+    // entry instead of the "gpt-4o" prefix — otherwise -mini/-nano variants get
+    // billed at the (much higher) parent model's rate.
+    const key = Object.keys(PRICING)
+        .sort((a, b) => b.length - a.length)
+        .find((k) => modelId === k || modelId.startsWith(`${k}-`));
     if (!key) return undefined;
     const [promptPricePerToken, completionPricePerToken] = PRICING[key];
     return { promptPricePerToken, completionPricePerToken };

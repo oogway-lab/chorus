@@ -13,6 +13,7 @@ import {
     boolean,
     timestamp,
     unique,
+    index,
 } from "drizzle-orm/pg-core";
 import type {
     FieldRule,
@@ -59,7 +60,7 @@ export const users = pgTable("users", {
     email: text("email").notNull().unique(),
     name: text("name"),
     createdAt: createdAt(),
-});
+}, (t) => [index("users_team_id_idx").on(t.teamId)]);
 
 export const datasets = pgTable("datasets", {
     id: id(),
@@ -69,7 +70,7 @@ export const datasets = pgTable("datasets", {
     name: text("name").notNull(),
     createdBy: uuid("created_by").references(() => users.id),
     createdAt: createdAt(),
-});
+}, (t) => [index("datasets_team_id_idx").on(t.teamId)]);
 
 // One canonical output schema per dataset (resolved assumption). field_rules maps
 // each schema field to its matcher: exact | numeric_tolerance | set_overlap (KTD7).
@@ -95,7 +96,7 @@ export const datasetItems = pgTable("dataset_items", {
     storageKey: text("storage_key"),
     mimeType: text("mime_type"),
     createdAt: createdAt(),
-});
+}, (t) => [index("dataset_items_dataset_id_idx").on(t.datasetId)]);
 
 // Optional ground-truth label per item (partial labels supported).
 export const labels = pgTable("labels", {
@@ -118,7 +119,7 @@ export const prompts = pgTable("prompts", {
     // For per-model variants: the shared prompt they derive from.
     basePromptId: uuid("base_prompt_id"),
     createdAt: createdAt(),
-});
+}, (t) => [index("prompts_team_id_idx").on(t.teamId)]);
 
 export const promptVersions = pgTable(
     "prompt_versions",
@@ -144,7 +145,7 @@ export const judgeConfigs = pgTable("judge_configs", {
     modelId: text("model_id").notNull(),
     rubricPrompt: text("rubric_prompt").notNull(),
     createdAt: createdAt(),
-});
+}, (t) => [index("judge_configs_team_id_idx").on(t.teamId)]);
 
 export const runs = pgTable("runs", {
     id: id(),
@@ -162,7 +163,7 @@ export const runs = pgTable("runs", {
         .notNull(),
     createdBy: uuid("created_by").references(() => users.id),
     createdAt: createdAt(),
-});
+}, (t) => [index("runs_team_id_idx").on(t.teamId)]);
 
 export const runModels = pgTable("run_models", {
     id: id(),
@@ -175,7 +176,7 @@ export const runModels = pgTable("run_models", {
         .references(() => promptVersions.id),
     // gpt-4o reference column flag (R6).
     isReference: boolean("is_reference").notNull().default(false),
-});
+}, (t) => [index("run_models_run_id_idx").on(t.runId)]);
 
 export const runCells = pgTable(
     "run_cells",
@@ -200,7 +201,11 @@ export const runCells = pgTable(
         error: text("error"),
         createdAt: createdAt(),
     },
-    (t) => [unique().on(t.runId, t.datasetItemId, t.runModelId)],
+    (t) => [
+        unique().on(t.runId, t.datasetItemId, t.runModelId),
+        index("run_cells_run_id_idx").on(t.runId),
+        index("run_cells_dataset_item_id_idx").on(t.datasetItemId),
+    ],
 );
 
 export const cellScores = pgTable("cell_scores", {
@@ -214,4 +219,4 @@ export const cellScores = pgTable("cell_scores", {
     detailsJson: jsonb("details_json"),
     rationale: text("rationale"),
     createdAt: createdAt(),
-});
+}, (t) => [index("cell_scores_run_cell_id_idx").on(t.runCellId)]);

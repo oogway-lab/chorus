@@ -8,6 +8,13 @@
       "when": 1781345146998,
       "tag": "0000_opposite_baron_strucker",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1781347821839,
+      "tag": "0001_complete_wolf_cub",
+      "breakpoints": true
     }
   ]
 }

@@ -64,6 +64,8 @@ export async function runJudge(input: JudgeInput): Promise<JudgeOutcome> {
         if (result.schemaViolation || result.parsed === undefined) {
             return { ok: false, error: "Judge returned unparseable output" };
         }
+        // result.parsed is JSON validated against JUDGE_SCHEMA on the wire
+        // (strict mode); narrow it here to read the two known fields.
         const parsed = result.parsed as { score?: unknown; rationale?: unknown };
         const score = Number(parsed.score);
         if (Number.isNaN(score)) {

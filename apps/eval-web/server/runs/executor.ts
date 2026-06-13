@@ -33,6 +33,7 @@ import type { EvalImage } from "@chorus/llm-core";
 const CONCURRENCY = Number(process.env.EVAL_CONCURRENCY ?? 5);
 
 function asObject(v: unknown): Record<string, unknown> | undefined {
+    // The guard narrows the unknown jsonb value to a plain object before the cast.
     return v && typeof v === "object" && !Array.isArray(v)
         ? (v as Record<string, unknown>)
         : undefined;
@@ -118,10 +119,8 @@ export async function executeRun(runId: string): Promise<void> {
 
             const cached = await findCachedCell(
                 item.id,
-                rm.id,
                 rm.modelId,
                 rm.promptVersionId,
-                runId,
             );
 
             if (cached) {
@@ -178,18 +177,24 @@ export async function executeRun(runId: string): Promise<void> {
                 })
                 .where(eq(runCells.id, cell.id));
 
-            await scoreCell({
-                cellId: cell.id,
-                itemId: item.id,
-                inputText: item.inputText ?? undefined,
-                hasImage: Boolean(item.storageKey),
-                outputJson,
-                fieldRules,
-                judge,
-                referenceModelId: referenceModel?.id,
-                apiKeys,
-                maxTokens: run.configSnapshot.maxTokens,
-            });
+            // Scoring failures must not flip a successful generation to failed —
+            // generation and scoring are independent concerns.
+            try {
+                await scoreCell({
+                    cellId: cell.id,
+                    itemId: item.id,
+                    inputText: item.inputText ?? undefined,
+                    hasImage: Boolean(item.storageKey),
+                    outputJson,
+                    fieldRules,
+                    judge,
+                    referenceModelId: referenceModel?.id,
+                    apiKeys,
+                    maxTokens: run.configSnapshot.maxTokens,
+                });
+            } catch (scoreErr) {
+                console.error(`scoring failed for cell ${cell.id}:`, scoreErr);
+            }
         } catch (err) {
             await db
                 .update(runCells)

@@ -22,7 +22,9 @@ export class OpenAIEvalProvider implements IEvalCompletionProvider {
     private client: OpenAI;
 
     constructor(apiKey: string) {
-        this.client = new OpenAI({ apiKey });
+        // Bound each call so a hung request can't pin an eval lane indefinitely,
+        // and let the SDK retry transient 429/5xx.
+        this.client = new OpenAI({ apiKey, timeout: 120_000, maxRetries: 2 });
     }
 
     async complete(req: CompletionRequest): Promise<CompletionResult> {

@@ -526,9 +526,6 @@ importers:
 
   packages/llm-core:
     dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.33.1
-        version: 0.33.1(encoding@0.1.13)
       openai:
         specifier: ^6.10.0
         version: 6.10.0(ws@8.18.3)(zod@4.2.0)

@@ -10,6 +10,27 @@ import { createRun } from "@/server/runs/service";
 import { executeRun } from "@/server/runs/executor";
 import type { FieldRule, JsonSchemaObject, LabelJson } from "@/server/db/jsonTypes";
 
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+];
+
+// Parse a user-supplied JSON form field. The `as T` reflects the shape the
+// downstream service expects; on malformed input we throw a clear, field-scoped
+// error instead of letting JSON.parse's opaque SyntaxError reach the user.
+function parseJsonField<T>(raw: string, field: string, fallback: T): T {
+    const trimmed = raw.trim();
+    if (!trimmed) return fallback;
+    try {
+        return JSON.parse(trimmed) as T;
+    } catch {
+        throw new Error(`Invalid JSON in "${field}"`);
+    }
+}
+
 export async function createDatasetAction(formData: FormData) {
     const p = await requirePrincipal();
     const name = String(formData.get("name") || "Untitled dataset");
@@ -21,12 +42,16 @@ export async function createDatasetAction(formData: FormData) {
 export async function setSchemaAction(formData: FormData) {
     await requirePrincipal();
     const datasetId = String(formData.get("datasetId"));
-    const jsonSchema = JSON.parse(
-        String(formData.get("jsonSchema") || "{}"),
-    ) as JsonSchemaObject;
-    const fieldRules = JSON.parse(
-        String(formData.get("fieldRules") || "[]"),
-    ) as FieldRule[];
+    const jsonSchema = parseJsonField<JsonSchemaObject>(
+        String(formData.get("jsonSchema") || ""),
+        "jsonSchema",
+        {},
+    );
+    const fieldRules = parseJsonField<FieldRule[]>(
+        String(formData.get("fieldRules") || ""),
+        "fieldRules",
+        [],
+    );
     await datasets.setDatasetSchema(datasetId, jsonSchema, fieldRules);
     revalidatePath(`/datasets/${datasetId}`);
 }
@@ -35,11 +60,20 @@ export async function addItemAction(formData: FormData) {
     await requirePrincipal();
     const datasetId = String(formData.get("datasetId"));
     const inputText = String(formData.get("inputText") || "");
-    const labelRaw = String(formData.get("label") || "").trim();
-    const label = labelRaw ? (JSON.parse(labelRaw) as LabelJson) : undefined;
+    const label = parseJsonField<LabelJson | undefined>(
+        String(formData.get("label") || ""),
+        "label",
+        undefined,
+    );
 
     const image = formData.get("image");
     if (image && typeof image !== "string" && image.size > 0) {
+        if (image.size > MAX_IMAGE_BYTES) {
+            throw new Error("Image exceeds the 20MB limit");
+        }
+        if (!ALLOWED_IMAGE_TYPES.includes(image.type)) {
+            throw new Error(`Unsupported image type: ${image.type || "unknown"}`);
+        }
         const buf = Buffer.from(await image.arrayBuffer());
         await datasets.addImageItem(
             datasetId,

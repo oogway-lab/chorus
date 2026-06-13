@@ -12,11 +12,7 @@ import {
     type CostSource,
     type UsageData,
 } from "@chorus/llm-core";
-
-export interface ModelPricing {
-    promptPricePerToken: number;
-    completionPricePerToken: number;
-}
+import type { ModelPricing } from "../llm/pricing";
 
 export interface ExecutedCell {
     outputText: string;
