@@ -1,18 +1,15 @@
-// Cell execution: the seam where the eval app calls llm-core. This is the core of
-// U7 — given a resolved request, call the provider, capture latency, and pin a
-// canonical cost source per cell (KTD4). DB persistence and fan-out enqueueing are
-// marked TODO; this file establishes the typed contract and the llm-core wiring.
+// Cell execution: the seam where the eval app calls llm-core. Given a resolved
+// request, call OpenAI, capture latency, and record cost computed from usage ×
+// pricing (or unavailable when usage is missing). DB persistence and fan-out
+// enqueueing are marked TODO; this file establishes the typed contract.
 
 import {
     getEvalProvider,
-    getProviderName,
     getBareModelName,
     computeCostFromUsage,
-    fetchOpenRouterCost,
     type ApiKeys,
     type CompletionRequest,
     type CostSource,
-    type OpenRouterAttribution,
     type UsageData,
 } from "@chorus/llm-core";
 
@@ -31,16 +28,9 @@ export interface ExecutedCell {
     costSource: CostSource;
 }
 
-export function attributionFromEnv(): OpenRouterAttribution {
-    return {
-        referer: process.env.OPENROUTER_REFERER ?? "https://example.com",
-        title: process.env.OPENROUTER_TITLE ?? "Model Eval",
-    };
-}
-
 /**
- * Execute a single cell: call the model and resolve cost from one canonical source.
- * `modelId` is the full `provider::model` id; the request carries the bare name.
+ * Execute a single cell: call the model and compute cost from usage × pricing.
+ * `modelId` is the OpenAI model name (a stray `provider::` prefix is tolerated).
  */
 export async function executeCell(
     modelId: string,
@@ -48,21 +38,14 @@ export async function executeCell(
     apiKeys: ApiKeys,
     pricing: ModelPricing | undefined,
 ): Promise<ExecutedCell> {
-    const attribution = attributionFromEnv();
-    const provider = getEvalProvider(modelId, apiKeys, attribution);
+    const provider = getEvalProvider(apiKeys);
 
     const result = await provider.complete({
         ...request,
         model: getBareModelName(modelId),
     });
 
-    const { costUsd, costSource } = await resolveCost(
-        modelId,
-        result.usage,
-        apiKeys,
-        pricing,
-        attribution,
-    );
+    const { costUsd, costSource } = resolveCost(result.usage, pricing);
 
     return {
         outputText: result.text,
@@ -75,33 +58,10 @@ export async function executeCell(
     };
 }
 
-async function resolveCost(
-    modelId: string,
+function resolveCost(
     usage: UsageData,
-    apiKeys: ApiKeys,
     pricing: ModelPricing | undefined,
-    attribution: OpenRouterAttribution,
-): Promise<{ costUsd?: number; costSource: CostSource }> {
-    // Prefer OpenRouter's authoritative cost when available.
-    if (
-        getProviderName(modelId) === "openrouter" &&
-        usage.generationId &&
-        apiKeys.openrouter
-    ) {
-        const authoritative = await fetchOpenRouterCost(
-            usage.generationId,
-            apiKeys.openrouter,
-            attribution,
-        );
-        if (authoritative) {
-            return {
-                costUsd: authoritative.cost,
-                costSource: "openrouter_authoritative",
-            };
-        }
-    }
-
-    // Otherwise compute from token usage × static pricing.
+): { costUsd?: number; costSource: CostSource } {
     if (pricing) {
         const computed = computeCostFromUsage(
             usage,
@@ -112,6 +72,5 @@ async function resolveCost(
             return { costUsd: computed, costSource: "computed" };
         }
     }
-
     return { costSource: "unavailable" };
 }

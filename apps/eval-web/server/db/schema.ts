@@ -31,11 +31,7 @@ export const cellStatus = pgEnum("cell_status", [
     "failed",
     "cached",
 ]);
-export const costSource = pgEnum("cost_source", [
-    "openrouter_authoritative",
-    "computed",
-    "unavailable",
-]);
+export const costSource = pgEnum("cost_source", ["computed", "unavailable"]);
 export const scorerType = pgEnum("scorer_type", ["field_diff", "judge"]);
 
 const id = () => uuid("id").primaryKey().defaultRandom();
