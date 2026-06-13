@@ -38,11 +38,19 @@ before any real deployment.
 - `server/scoring/` — field diff + judge.
 - `app/` — Next.js App Router UI + server actions.
 
+## Execution model
+
+Runs execute in the background: `createRunAction` enqueues the run and redirects
+immediately; a pg-boss worker (started at server boot via `instrumentation.ts`)
+drains the durable queue and runs the two-phase executor (all generations, then
+all scoring). A crash leaves the job in the queue and `recoverOrphanedRuns` re-queues
+runs stuck in `running`. Data access is team-scoped and ownership-checked; the
+identity itself (`requirePrincipal`) is still the dev stub — wire a real provider
+before a hosted deployment.
+
 ## Known follow-ups
 
-- Background execution uses an in-process runner; `server/jobs/queue.ts` wires
-  pg-boss for the hosted path (a separate worker process is the production shape).
-- Image storage is local disk (`.uploads/`); object storage is the production
-  substrate.
+- Single-instance worker: the queue is durable, but image storage is local disk
+  (`.uploads/`) — a multi-instance deployment needs shared object storage.
 - Per-team API-key storage supersedes the `OPENAI_API_KEY` env fallback.
 - OpenAI pricing is a static map; live pricing fetch is deferred.
