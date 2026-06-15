@@ -1,14 +1,22 @@
+import Link from "next/link";
 import { requirePrincipal } from "@/server/auth/session";
-import { listDatasets } from "@/server/datasets/service";
+import { listDatasetsEnriched } from "@/server/datasets/reads";
 import { listPrompts, listVersions } from "@/server/prompts/service";
 import { listJudgeConfigs } from "@/server/judges/service";
 import { createRunAction, createJudgeAction } from "@/app/actions";
+import { PageHeader } from "@/components/layout/page-header";
+import { NewRunForm } from "@/components/runs/new-run-form";
+import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
 
-export default async function NewRunPage() {
+export default async function NewRunPage({
+    searchParams,
+}: {
+    searchParams: { datasetId?: string };
+}) {
     const p = await requirePrincipal();
-    const datasets = await listDatasets(p.teamId);
+    const datasets = await listDatasetsEnriched(p.teamId);
     const prompts = await listPrompts(p.teamId);
     const versions = await Promise.all(prompts.map((pr) => listVersions(pr.id)));
     const judges = await listJudgeConfigs(p.teamId);
@@ -20,95 +28,53 @@ export default async function NewRunPage() {
         })),
     );
 
+    const ready = datasets.length > 0 && versionOptions.length > 0;
+
     return (
         <div>
-            <h1>New run</h1>
+            <PageHeader
+                title="New run"
+                description="Configure and launch a model evaluation across your dataset."
+                breadcrumbs={[
+                    { label: "Runs", href: "/runs" },
+                    { label: "New run" },
+                ]}
+            />
 
-            {datasets.length === 0 || versionOptions.length === 0 ? (
-                <p className="muted">
-                    You need at least one dataset and one prompt version first.
-                </p>
-            ) : (
-                <form action={createRunAction} className="card">
-                    <label htmlFor="datasetId">Dataset</label>
-                    <select id="datasetId" name="datasetId">
-                        {datasets.map((d) => (
-                            <option key={d.id} value={d.id}>
-                                {d.name}
-                            </option>
-                        ))}
-                    </select>
-
-                    <label htmlFor="promptVersionId">Prompt version</label>
-                    <select id="promptVersionId" name="promptVersionId">
-                        {versionOptions.map((o) => (
-                            <option key={o.id} value={o.id}>
-                                {o.label}
-                            </option>
-                        ))}
-                    </select>
-
-                    <label htmlFor="models">
-                        Candidate models (one per line, e.g. gpt-4o)
-                    </label>
-                    <textarea
-                        id="models"
-                        name="models"
-                        rows={4}
-                        defaultValue={"gpt-4o\ngpt-4o-mini"}
-                    />
-
-                    <label htmlFor="referenceModel">
-                        Reference model (the incumbent, e.g. gpt-4o)
-                    </label>
-                    <input
-                        id="referenceModel"
-                        name="referenceModel"
-                        type="text"
-                        defaultValue="gpt-4o"
-                    />
-
-                    <label htmlFor="maxTokens">Max output tokens</label>
-                    <input
-                        id="maxTokens"
-                        name="maxTokens"
-                        type="number"
-                        defaultValue={500}
-                    />
-
-                    <label htmlFor="judgeConfigId">Judge (optional)</label>
-                    <select id="judgeConfigId" name="judgeConfigId">
-                        <option value="">— none —</option>
-                        {judges.map((j) => (
-                            <option key={j.id} value={j.id}>
-                                {j.name} ({j.modelId})
-                            </option>
-                        ))}
-                    </select>
-
-                    <button type="submit">Run evaluation</button>
-                    <p className="muted">
-                        The run executes inline and may take a moment for larger
-                        datasets.
+            {!ready ? (
+                <div className="rounded-lg border border-border bg-white p-8 text-center">
+                    <p className="text-sm text-muted">
+                        You need at least one dataset and one prompt version first.
                     </p>
-                </form>
-            )}
-
-            <h2>Add a judge</h2>
-            <form action={createJudgeAction} className="card">
-                <label htmlFor="jname">Name</label>
-                <input id="jname" name="name" type="text" placeholder="rubric" />
-                <label htmlFor="jmodel">Judge model</label>
-                <input
-                    id="jmodel"
-                    name="modelId"
-                    type="text"
-                    defaultValue="gpt-4o-mini"
+                    <div className="mt-4 flex justify-center gap-3">
+                        <Button asChild variant="secondary" size="sm">
+                            <Link href="/datasets">Go to datasets</Link>
+                        </Button>
+                        <Button asChild variant="secondary" size="sm">
+                            <Link href="/prompts">Go to prompts</Link>
+                        </Button>
+                    </div>
+                </div>
+            ) : (
+                <NewRunForm
+                    datasets={datasets.map((d) => ({
+                        id: d.id,
+                        name: d.name,
+                        itemCount: d.itemCount,
+                        hasSchema: d.hasSchema,
+                    }))}
+                    versionOptions={versionOptions}
+                    judges={judges.map((j) => ({
+                        id: j.id,
+                        name: j.name,
+                        modelId: j.modelId,
+                    }))}
+                    defaultDatasetId={searchParams.datasetId}
+                    hasPrompt={prompts.length > 0}
+                    createRunAction={createRunAction}
+                    createJudgeAction={createJudgeAction}
                 />
-                <label htmlFor="rubric">Rubric prompt</label>
-                <textarea id="rubric" name="rubricPrompt" rows={3} />
-                <button type="submit">Add judge</button>
-            </form>
+            )}
         </div>
     );
 }

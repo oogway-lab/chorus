@@ -20,10 +20,14 @@ export async function storeImage(
     return key;
 }
 
+export function imageFilePath(storageKey: string): string {
+    return path.join(UPLOAD_DIR, storageKey);
+}
+
 export async function loadImage(
     storageKey: string,
     mimeType: string,
 ): Promise<EvalImage> {
-    const bytes = await fs.readFile(path.join(UPLOAD_DIR, storageKey));
+    const bytes = await fs.readFile(imageFilePath(storageKey));
     return { mimeType, base64Data: bytes.toString("base64") };
 }

@@ -1,4 +1,4 @@
-import { eq, and, inArray, desc } from "drizzle-orm";
+import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import {
     runs,
@@ -93,13 +93,86 @@ export async function getRunCells(runId: string) {
 }
 
 export async function getRunProgress(runId: string) {
-    const cells = await getRunCells(runId);
-    const total = cells.length;
-    const done = cells.filter(
-        (c) => c.status === "succeeded" || c.status === "cached",
-    ).length;
-    const failed = cells.filter((c) => c.status === "failed").length;
+    // Count by status in SQL — avoids loading every cell's jsonb payload, which
+    // matters since this runs on every progress poll and per-row in list reads.
+    const rows = await db
+        .select({
+            status: runCells.status,
+            count: sql<number>`count(*)::int`,
+        })
+        .from(runCells)
+        .where(eq(runCells.runId, runId))
+        .groupBy(runCells.status);
+
+    let total = 0;
+    let done = 0;
+    let failed = 0;
+    for (const r of rows) {
+        total += r.count;
+        if (r.status === "succeeded" || r.status === "cached") done += r.count;
+        else if (r.status === "failed") failed += r.count;
+    }
     return { total, done, failed, pending: total - done - failed };
+}
+
+export interface RunProgress {
+    total: number;
+    done: number;
+    failed: number;
+    pending: number;
+}
+
+/** Progress for many runs in a single grouped query (avoids the per-run N+1). */
+export async function getRunProgressForRuns(
+    runIds: string[],
+): Promise<Map<string, RunProgress>> {
+    const result = new Map<string, RunProgress>();
+    if (runIds.length === 0) return result;
+    for (const id of runIds) {
+        result.set(id, { total: 0, done: 0, failed: 0, pending: 0 });
+    }
+    const rows = await db
+        .select({
+            runId: runCells.runId,
+            status: runCells.status,
+            count: sql<number>`count(*)::int`,
+        })
+        .from(runCells)
+        .where(inArray(runCells.runId, runIds))
+        .groupBy(runCells.runId, runCells.status);
+    for (const r of rows) {
+        const p = result.get(r.runId);
+        if (!p) continue;
+        p.total += r.count;
+        if (r.status === "succeeded" || r.status === "cached") p.done += r.count;
+        else if (r.status === "failed") p.failed += r.count;
+    }
+    for (const p of result.values()) p.pending = p.total - p.done - p.failed;
+    return result;
+}
+
+/** Most recent runs for a team, limit pushed to SQL. */
+export async function listRecentRuns(teamId: string, limit: number) {
+    return db
+        .select()
+        .from(runs)
+        .where(eq(runs.teamId, teamId))
+        .orderBy(desc(runs.createdAt))
+        .limit(limit);
+}
+
+/** Run counts for a team without loading every row. */
+export async function getRunCounts(
+    teamId: string,
+): Promise<{ total: number; active: number }> {
+    const [row] = await db
+        .select({
+            total: sql<number>`count(*)::int`,
+            active: sql<number>`count(*) filter (where ${runs.status} in ('running','pending'))::int`,
+        })
+        .from(runs)
+        .where(eq(runs.teamId, teamId));
+    return { total: row?.total ?? 0, active: row?.active ?? 0 };
 }
 
 export async function getScoresForCells(cellIds: string[]) {
